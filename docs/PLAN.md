@@ -3,8 +3,9 @@ PLAN: "feat: webtyp/weightsc — safetensors to WTYPW1 converter for granite-emb
 TAG: v0.1.0
 EXECUTOR: jules
 REVIEWER: none
-STATUS: running
+STATUS: review
 SESSION: 8052174035207838561
+PR: https://github.com/webtyp/weightsc/pull/1
 ---
 
 > This plan is dispatched via the CodeJob workflow. See skill: agents-workflow.
