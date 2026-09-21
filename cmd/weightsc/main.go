@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"math"
 	"os"
 
 	"webtyp.com/weightsc"
@@ -14,11 +15,6 @@ func printUsage() {
 }
 
 func main() {
-	if len(os.Args) <= 1 {
-		printUsage()
-		os.Exit(0)
-	}
-
 	inDir := flag.String("in", "", "input directory containing model.safetensors, config.json, and tokenizer.json")
 	outFile := flag.String("out", "", "output .wtypw artifact file path")
 	mergesOutFile := flag.String("merges-out", "", "output .merges companion file path")
@@ -29,11 +25,21 @@ func main() {
 		printUsage()
 	}
 
+	if len(os.Args) <= 1 {
+		printUsage()
+		os.Exit(0)
+	}
+
 	flag.Parse()
 
 	if *inDir == "" || *outFile == "" || *mergesOutFile == "" || *artifactID == "" || *version == 0 {
 		fmt.Fprintln(os.Stderr, "Error: missing or invalid required flags (-in, -out, -merges-out, -id, -version)")
 		printUsage()
+		os.Exit(1)
+	}
+
+	if *version > math.MaxUint32 {
+		fmt.Fprintf(os.Stderr, "Error: -version %d exceeds uint32 range (max %d)\n", *version, uint32(math.MaxUint32))
 		os.Exit(1)
 	}
 

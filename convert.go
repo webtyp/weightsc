@@ -81,7 +81,7 @@ func parseMerges(rawMerges []json.RawMessage) ([]string, error) {
 	return merges, nil
 }
 
-func parseVocab(vocabMap map[string]int, vocabSize int) []string {
+func parseVocab(vocabMap map[string]int, vocabSize int) ([]string, error) {
 	maxID := -1
 	for _, id := range vocabMap {
 		if id > maxID {
@@ -94,12 +94,21 @@ func parseVocab(vocabMap map[string]int, vocabSize int) []string {
 	}
 
 	vocab := make([]string, size)
+	filled := make([]bool, size)
 	for tok, id := range vocabMap {
 		if id >= 0 && id < size {
 			vocab[id] = tok
+			filled[id] = true
 		}
 	}
-	return vocab
+
+	for id, ok := range filled {
+		if !ok {
+			return nil, fmt.Errorf("vocab has no token for id %d (vocab size %d)", id, size)
+		}
+	}
+
+	return vocab, nil
 }
 
 // Convert reads a model directory containing config.json, tokenizer.json, and model.safetensors,
@@ -125,7 +134,11 @@ func Convert(inDir string, artifactID string, version uint32) ([]byte, []byte, e
 		return nil, nil, fmt.Errorf("parsing tokenizer.json: %w", err)
 	}
 
-	vocab := parseVocab(tokData.Model.Vocab, cfg.VocabSize)
+	vocab, err := parseVocab(tokData.Model.Vocab, cfg.VocabSize)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parsing vocab from tokenizer.json: %w", err)
+	}
+
 	merges, err := parseMerges(tokData.Model.Merges)
 	if err != nil {
 		return nil, nil, fmt.Errorf("parsing merges from tokenizer.json: %w", err)

@@ -12,6 +12,28 @@ import (
 	"webtyp.com/weights"
 )
 
+func TestParseVocab_GapReturnsError(t *testing.T) {
+	vocabMap := map[string]int{"a": 0, "c": 2} // gap at id 1
+	_, err := parseVocab(vocabMap, 3)
+	if err == nil {
+		t.Fatal("expected error for vocab gap, got nil")
+	}
+}
+
+func TestParseVocab_DenseOK(t *testing.T) {
+	vocabMap := map[string]int{"a": 0, "b": 1, "c": 2}
+	vocab, err := parseVocab(vocabMap, 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"a", "b", "c"}
+	for i, w := range want {
+		if vocab[i] != w {
+			t.Errorf("vocab[%d] = %q, want %q", i, vocab[i], w)
+		}
+	}
+}
+
 func TestBF16ToF32_KnownValues(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -19,7 +41,7 @@ func TestBF16ToF32_KnownValues(t *testing.T) {
 		expected float32
 	}{
 		{"zero", 0x0000, 0.0},
-		{"neg zero", 0x8000, -0.0},
+		{"neg zero", 0x8000, float32(math.Copysign(0, -1))},
 		{"one", 0x3F80, 1.0},
 		{"neg one", 0xBF80, -1.0},
 		{"half", 0x3F00, 0.5},
@@ -29,8 +51,9 @@ func TestBF16ToF32_KnownValues(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := bf16ToF32(tt.bits)
-			if got != tt.expected && !(math.IsNaN(float64(got)) && math.IsNaN(float64(tt.expected))) {
-				t.Errorf("bf16ToF32(0x%04X) = %v, want %v", tt.bits, got, tt.expected)
+			if math.Float32bits(got) != math.Float32bits(tt.expected) {
+				t.Errorf("bf16ToF32(0x%04X) = %v (bits %#x), want %v (bits %#x)",
+					tt.bits, got, math.Float32bits(got), tt.expected, math.Float32bits(tt.expected))
 			}
 		})
 	}

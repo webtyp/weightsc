@@ -3,8 +3,9 @@ PLAN: "fix: weightsc — version bounds, sparse-vocab guard, go.mod tidy, flag h
 TAG: v0.1.1
 EXECUTOR: jules
 REVIEWER: none
-STATUS: running
+STATUS: review
 SESSION: 6232063564342468673
+PR: https://github.com/webtyp/weightsc/pull/2
 ---
 
 > This plan is dispatched via the CodeJob workflow. See skill: agents-workflow.
