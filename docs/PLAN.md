@@ -1,233 +1,260 @@
 ---
-PLAN: "feat: webtyp/weightsc — safetensors to WTYPW1 converter for granite-embedding-97m-multilingual-r2"
-TAG: v0.1.0
+PLAN: "fix: weightsc — version bounds, sparse-vocab guard, go.mod tidy, flag help order, bit-exact bf16 test"
+TAG: v0.1.1
 EXECUTOR: jules
 REVIEWER: none
-STATUS: running
-SESSION: 8052174035207838561
 ---
 
 > This plan is dispatched via the CodeJob workflow. See skill: agents-workflow.
-> Índice maestro: https://github.com/webtyp/agent/blob/main/docs/MASTER_PLAN.md —
-> §5 nota (g). El formato que se escribe está documentado en
-> [`webtyp/weights`](https://github.com/webtyp/weights/blob/main/docs/PLAN.md).
+> Índice maestro: https://github.com/webtyp/agent/blob/main/docs/MASTER_PLAN.md.
 >
-> **Este repositorio es una herramienta host-only**, no compila a WASM. `os`, `flag`,
-> `net/http` y el resto de la stdlib de Go son legítimos acá — **no los "corrijas"** aunque
-> hayas visto la regla contraria en otros repos del ecosistema (`weights`, `tokenizer`,
-> `transformer`). La regla de "sin stdlib" es para código que compila a WASM bajo TinyGo;
-> este repo nunca lo hace. Ver `AGENTS.md` en este repo, que fija esto explícitamente.
+> **Este repositorio es host-only, no compila a WASM.** `os`, `flag`, `map[K]V` y el resto de
+> la stdlib de Go son legítimos acá — ver `AGENTS.md` de este repo, que lo fija explícitamente.
+> Si alguna regla de otro repo del ecosistema pareciera decir lo contrario, no aplica acá.
 >
-> **Nota de idioma:** la prosa va en español; los bloques de código mantienen sus
-> comentarios en inglés.
+> **Nota de idioma:** la prosa va en español; los bloques de código mantienen sus comentarios
+> en inglés.
 
-# Plan — `webtyp/weightsc`
+# Plan — `webtyp/weightsc`, corrección puntual sobre la v0.1.0 ya mergeada
 
-## Responsabilidad única
+## Leé esta sección primero
 
-Lee un modelo HuggingFace en formato `safetensors` (más su `config.json` y `tokenizer.json`)
-y escribe el artifact binario `WTYPW1` que `webtyp/weights` sabe leer. CLI de un solo uso,
-no una librería de propósito general: existe para producir el artifact real de
-`granite-embedding-97m-multilingual-r2` y cualquier candidato futuro con la misma forma
-(ModernBERT), no para ser un conversor universal de formatos de modelo.
+Este repo **ya tiene el conversor completo e implementado**, mergeado como v0.1.0: lee
+`safetensors` + `config.json` + `tokenizer.json`, cuantiza a int8 por fila, escribe el
+artifact `.wtypw` y el `.merges`. Una revisión encontró **5 defectos puntuales**, cada uno
+en un archivo distinto, ninguno estructural. Este plan corrige exactamente esos 5 puntos.
 
-**No** decide cuantización, ni formato de artifact, ni el contrato de `TokenizerConfig` — esos
-ya están fijados por `webtyp/weights` (publicado, v0.1.0). Este repo los consume, no los
-diseña.
+**No reescribas ningún archivo. No cambies el diseño, el CLI, el formato del artifact ni la
+lógica de cuantización.** Si una parte del código no está listada abajo, no la toques —
+incluidos los `map[string]TensorInfo` y `map[string]int` que ya existen en `safetensors.go` y
+`convert.go`: son legítimos en este repo (ver nota de arriba) y **no** hay que convertirlos a
+slice. Una versión anterior de este plan tenía una línea de checklist que sugería lo
+contrario por error; la sección "Checklist de aceptación" de abajo la corrige.
 
-## Design gate
+## Fix 1 — `cmd/weightsc/main.go`: `printUsage` no imprime los flags porque corre antes de registrarlos
 
-**1. Prior art.** `llama.cpp`'s `convert_hf_to_gguf.py` (Python, lee safetensors + config.json,
-escribe GGUF); `optimum`'s exportador ONNX de HuggingFace (Python, similar contrato); `ormc`
-en este mismo ecosistema (Go, lee un modelo declarativo, escribe código/artifact, vive en su
-propio repo con sufijo `c`). Este plan sigue el patrón de `ormc`: convertir es trabajo de
-build, vive separado del runtime, y en Go porque ya existe `weights.WriteArtifact` en Go — no
-hace falta un segundo lenguaje para un solo paso de conversión.
-
-**2. Novice-name test.** `weightsc convert -in <dir> -out <file>` — un desarrollador que
-conoce `ormc`/`ddlc`/`sitec` lee el nombre y ya sabe qué hace sin documentación. `convert` es
-el verbo que ya usa este dominio (`convert_hf_to_gguf.py`), no se inventa uno nuevo.
-
-**3. Complexity ledger.**
-```
-Conceptos nuevos para el desarrollador   +1 (un CLI de conversión, ya conocido por el patrón *c)
-Repos a tocar para producir un artifact  0 (weightsc solo; no toca weights ni tokenizer)
-Formas de producir un artifact WTYPW1    1 (este CLI llama a weights.WriteArtifact; nadie
-                                             más construye el binario a mano)
-```
-
-**4. Dónde vive.** Repo aparte de `weights`, mismo patrón que `ormc`/`ddlc`/`sitec` (§5 nota
-(g) del índice maestro). Importa `webtyp.com/weights` para el writer; no al revés.
-
-**5. Qué borra.** Nada — es capacidad nueva. Cierra la nota (g) del índice maestro, que deja
-de estar "sin plan".
-
-## Qué convierte, exactamente
-
-Un solo modelo por ahora: **`ibm-granite/granite-embedding-97m-multilingual-r2`**
-(HuggingFace, Apache 2.0, sin autenticación). Arquitectura `ModernBertModel`. Verificado
-directo desde el repo real, no de memoria — estos números son la fuente de verdad:
-
-```
-config.json (campos relevantes):
-  hidden_size: 384          num_hidden_layers: 12      num_attention_heads: 12
-  intermediate_size: 1536   vocab_size: 180000          layer_norm_eps: 1e-5
-  attention_bias: false     mlp_bias: false             norm_bias: false
-  dtype: bfloat16
-
-model.safetensors: archivo único, 194 889 568 bytes, 74 tensores.
-```
-
-**Nombres de tensor** (verificados leyendo el header real del `.safetensors`, no inferidos):
-
-```
-embeddings.tok_embeddings.weight   [180000, 384]  BF16   ← tabla de embeddings
-embeddings.norm.weight             [384]          BF16   ← LayerNorm tras el embedding
-final_norm.weight                  [384]          BF16   ← LayerNorm final, antes del pooling
-
-por cada capa i en 0..11:
-  layers.{i}.attn.Wqkv.weight      [1152, 384]    BF16   ← QKV fusionado (3×384)
-  layers.{i}.attn.Wo.weight        [384, 384]     BF16   ← proyección de salida de atención
-  layers.{i}.attn_norm.weight      [384]          BF16   ← AUSENTE en la capa 0 (ver nota)
-  layers.{i}.mlp.Wi.weight         [3072, 384]    BF16   ← gate+up fusionado (2×1536)
-  layers.{i}.mlp.Wo.weight         [384, 1536]    BF16   ← proyección de bajada del MLP
-  layers.{i}.mlp_norm.weight       [384]          BF16
-```
-
-**Nota — capa 0 no tiene `attn_norm`.** ModernBERT usa `Identity` ahí porque
-`embeddings.norm` ya normalizó justo antes; es el diseño real del modelo, no un tensor
-faltante por error. El conteo cierra: 3 + (12×6 − 1) = 74, que es exactamente el total del
-header. Si tu código para 71 o 75, el error está en cómo mapeaste la capa 0.
-
-Total: 3 + 11×6 + 5 = 74 tensores. ✓ coincide con el header real.
-
-## Formato de origen: `safetensors`
-
-```
-[8 bytes]  N, uint64 little-endian — longitud del header JSON
-[N bytes]  header JSON: {"tensor.name": {"dtype": "BF16", "shape": [...], "data_offsets": [start, end]}, ...}
-[resto]    datos crudos de todos los tensores, contiguos, en el orden del header;
-           data_offsets es RELATIVO al final del header (no al inicio del archivo)
-```
-
-Sin dependencias externas: `encoding/json` para el header (este repo es host-only, ver nota
-de arriba) y lectura de bytes crudos con `encoding/binary`. El campo `__metadata__` del header
-no es un tensor — filtralo antes de iterar.
-
-**Conversión BF16 → float32:** un `bfloat16` son los 16 bits altos de un `float32` IEEE 754.
-Conversión exacta, sin pérdida adicional:
+Hoy:
 
 ```go
-func bf16ToF32(bits uint16) float32 {
-	return math.Float32frombits(uint32(bits) << 16)
+func main() {
+	if len(os.Args) <= 1 {
+		printUsage()
+		os.Exit(0)
+	}
+
+	inDir := flag.String("in", "", "input directory containing model.safetensors, config.json, and tokenizer.json")
+	outFile := flag.String("out", "", "output .wtypw artifact file path")
+	mergesOutFile := flag.String("merges-out", "", "output .merges companion file path")
+	artifactID := flag.String("id", "", "artifact ID")
+	version := flag.Uint("version", 0, "artifact version number")
+	...
+```
+
+`printUsage` llama a `flag.PrintDefaults()`, pero en la rama sin argumentos ese llamado
+ocurre **antes** de que `flag.String`/`flag.Uint` registren nada — el set de flags está
+vacío y `PrintDefaults()` no imprime nada por flag.
+
+**Arreglo:** mové las cinco declaraciones de flag (`inDir`, `outFile`, `mergesOutFile`,
+`artifactID`, `version`) y la asignación de `flag.Usage` **antes** del chequeo
+`len(os.Args) <= 1`. El resto de `main` (el `flag.Parse()` y todo lo que sigue) no cambia de
+lugar, solo las declaraciones suben.
+
+## Fix 2 — `cmd/weightsc/main.go`: `-version` se trunca en silencio si excede `uint32`
+
+Hoy:
+
+```go
+version := flag.Uint("version", 0, "artifact version number")
+...
+artifactBytes, mergesBytes, err := weightsc.Convert(*inDir, *artifactID, uint32(*version))
+```
+
+`flag.Uint` devuelve un `*uint` (64 bits en esta plataforma). `uint32(*version)` en la línea
+del `Convert` recorta en silencio cualquier valor que no entre en 32 bits — por ejemplo
+`-version 4294967297` (2^32+1) pasa el chequeo `*version == 0` y se convierte en `1` sin
+error ni warning.
+
+**Arreglo:** agregá un chequeo explícito de rango inmediatamente después del bloque de
+validación existente (el que ya chequea `*inDir == ""`, etc.), antes de llamar a
+`weightsc.Convert`:
+
+```go
+if *version > math.MaxUint32 {
+	fmt.Fprintf(os.Stderr, "Error: -version %d exceeds uint32 range (max %d)\n", *version, uint32(math.MaxUint32))
+	os.Exit(1)
 }
 ```
 
-## Cuantización: qué tensor se cuantiza y cómo
+Agregá `"math"` al bloque de imports de `cmd/weightsc/main.go`.
 
-Regla, ya fijada por `webtyp/weights` D5 y `MASTER_PLAN.md`: **todo tensor 2D se cuantiza a
-int8 con una escala por fila; todo tensor 1D (los `*_norm.weight`) se queda en float32, sin
-escalas.** Cuantizar un vector de escala de LayerNorm de 384 elementos no ahorra memoria que
-importe y sí mete error justo donde el modelo es más sensible — no lo hagas aunque D5 diga
-"todo el artifact en int8": esa frase habla del cuerpo del transformer (las matrices), no de
-los normalizadores.
+## Fix 3 — `convert.go`: `parseVocab` deja tokens vacíos en silencio si el vocabulario tiene huecos
 
-Por fila, `row` es el eje 0 del shape original (antes de cualquier transposición — ver nota
-de `Wqkv`/`mlp.Wi` abajo):
+Hoy:
 
 ```go
-// QuantizeRowInt8 converts one row of float32 values to int8 with a per-row scale.
-// scale = max(abs(row)) / 127; q[i] = round(row[i] / scale), clamped to [-127, 127].
-// A row of all zeros gets scale = 1 (avoid divide by zero) and stays all zeros.
-func QuantizeRowInt8(row []float32) (q []int8, scale float32)
+func parseVocab(vocabMap map[string]int, vocabSize int) []string {
+	maxID := -1
+	for _, id := range vocabMap {
+		if id > maxID {
+			maxID = id
+		}
+	}
+	size := vocabSize
+	if size < maxID+1 {
+		size = maxID + 1
+	}
+
+	vocab := make([]string, size)
+	for tok, id := range vocabMap {
+		if id >= 0 && id < size {
+			vocab[id] = tok
+		}
+	}
+	return vocab
+}
 ```
 
-**Los tensores fusionados (`Wqkv`, `mlp.Wi`) se cuantizan como están, fila por fila, sin
-separarlos.** Separar QKV en Q/K/V o gate/up acá sería una decisión de layout que le
-corresponde a `webtyp/transformer` (quien sabe cómo los usa), no a este conversor. Este repo
-copia forma y datos; `transformer` decide cómo cortarlos en tiempo de carga.
+Si `tokenizer.json` tuviera un id dentro de `[0, size)` sin token asociado (un hueco), esa
+posición del slice queda como `""` sin ningún error — el artifact final embarca un token en
+blanco en ese id, y el defecto es silencioso.
 
-## Vocabulario y merges: **no van los dos en el artifact**
+**Arreglo:** cambiá la firma para devolver un error y verificá que no quede ningún hueco
+antes de retornar:
 
-`weights.TokenizerConfig` (ya publicado, v0.1.0) tiene `Vocab []string` pero **no** un campo
-para las reglas de merge de BPE — el diseño original asumía WordPiece, que no necesita
-merges. Añadir un campo a un tipo público ya publicado es un cambio de API en un repo ajeno,
-fuera del alcance de este plan (ver Design gate §4: este repo consume el contrato de
-`weights`, no lo cambia).
+```go
+func parseVocab(vocabMap map[string]int, vocabSize int) ([]string, error) {
+	maxID := -1
+	for _, id := range vocabMap {
+		if id > maxID {
+			maxID = id
+		}
+	}
+	size := vocabSize
+	if size < maxID+1 {
+		size = maxID + 1
+	}
 
-**Decisión, para no dejarlo abierto:** este CLI escribe **dos archivos**:
+	vocab := make([]string, size)
+	filled := make([]bool, size)
+	for tok, id := range vocabMap {
+		if id >= 0 && id < size {
+			vocab[id] = tok
+			filled[id] = true
+		}
+	}
 
-1. El artifact `.wtypw` de siempre, vía `weights.WriteArtifact(id, version, tok, inputs)`,
-   con `tok.Vocab` poblado (orden = id de token, ver abajo) y `tok.Lowercase`/`tok.StripAccents`
-   **ambos en `false`** — el tokenizer real de este modelo no hace ninguna de las dos cosas
-   (ver `webtyp/tokenizer/docs/PLAN.md`, que es el otro plan de esta tanda).
-2. Un archivo plano `.merges` — una línea por regla, en el mismo orden que aparecen en
-   `tokenizer.json`, formato `"tok1 tok2"` (los mismos dos campos que trae el JSON, separados
-   por un espacio, sin comillas). El rank de una regla es su número de línea (0-indexed).
-   `webtyp/tokenizer` lo consume como `[]string` — cero parseo de JSON de su lado.
+	for id, ok := range filled {
+		if !ok {
+			return nil, fmt.Errorf("vocab has no token for id %d (vocab size %d)", id, size)
+		}
+	}
 
-Ambos se generan de la misma corrida, para el mismo modelo, y viajan juntos: la aplicación que
-los consuma (fuera de este plan) es responsable de no mezclar el `.wtypw` de una versión con
-el `.merges` de otra. Ese emparejamiento es trabajo de `webtyp/embed` cuando se escriba su
-adaptador — no de este repo.
-
-**Vocabulario, orden y contenido:** `tokenizer.json` → `model.vocab` es un objeto
-`{"token string": id}`. Invertilo a un `[]string` indexado por id (`vocab[id] = "token
-string"`), del 0 al `vocab_size-1` (180000, verificado en `config.json`). Los tokens son
-**strings byte-level de GPT-2** (cada byte crudo mapeado a un carácter Unicode imprimible,
-alfabeto de 256 símbolos — ver la sección de `webtyp/tokenizer/docs/PLAN.md` sobre esto): se
-copian tal cual, no se decodifican a UTF-8 acá. Decodificarlos es trabajo de `tokenizer`, no
-de este conversor.
-
-**`merges`:** `tokenizer.json` → `model.merges` es un array. Verificá en el archivo real si
-cada entrada es `["tok1", "tok2"]` (par) o `"tok1 tok2"` (string) — las dos formas existen
-según la versión de `tokenizers` que exportó el archivo; normalizá a `"tok1 tok2"` al escribir
-el `.merges`, sea cual sea el formato de origen.
-
-## CLI
-
-```bash
-weightsc -in <dir> -out <file.wtypw> -merges-out <file.merges> -id <artifact-id> -version <uint32>
+	return vocab, nil
+}
 ```
 
-`-in` es un directorio que contiene `model.safetensors`, `config.json` y `tokenizer.json` — no
-los descarga; asumí que ya están ahí (`huggingface-cli download` o `curl`, documentado en el
-`README.md` de este repo, no en el código). Sin argumentos, imprime el uso a stdout y sale con
-`0` (contrato de ejecución de `core-principles`, aplica igual en un CLI host-only).
+Actualizá el único caller, en `Convert` (`convert.go`):
 
-Estructura, por la regla de `cmd/` delgado (`plan-authoring`):
-
-```
-convert.go     // toda la lógica: parseo de safetensors, cuantización, escritura — testeable
-cmd/weightsc/main.go   // solo flag parsing + llamar a convert.Run(...) + os.Exit
+```go
+vocab, err := parseVocab(tokData.Model.Vocab, cfg.VocabSize)
+if err != nil {
+	return nil, nil, fmt.Errorf("parsing vocab from tokenizer.json: %w", err)
+}
 ```
 
-## Tests
+(hoy la línea es `vocab := parseVocab(tokData.Model.Vocab, cfg.VocabSize)`, sin chequeo de
+error — reemplazala por las dos líneas de arriba, en el mismo lugar donde está hoy, antes de
+la llamada a `parseMerges`).
 
-Sin descargar el modelo real de 195 MB en CI: un fixture sintético de 2-3 tensores pequeños
-(un 2D y un 1D) con el mismo layout de nombres (`embeddings.norm.weight`,
-`embeddings.tok_embeddings.weight` achicado a, digamos, 8 filas), escrito a mano como
-safetensors válido en el test.
+**Test nuevo**, agregalo a `convert_test.go` junto a los tests existentes de `parseVocab` si
+los hay, o como test nuevo si no los hay:
 
-| Test | Verifica |
-|---|---|
-| `TestBF16ToF32_KnownValues` | un puñado de bits BF16 conocidos, incluido 0, negativo, y el valor más cercano a 1.0 |
-| `TestQuantizeRowInt8_RoundTrip` | cuantizar y dequantizar (`q[i]*scale`) queda dentro de `scale/2` del original |
-| `TestQuantizeRowInt8_AllZeros` | scale = 1, sin división por cero |
-| `TestParseSafetensorsHeader_Fixture` | el fixture sintético produce los tensores esperados, con `__metadata__` filtrado |
-| `TestConvert_RoundTripThroughWeights` | el artifact escrito se abre con `weights.Open` sin error, y sus tensores int8 dequantizados están dentro de tolerancia de los float32 de entrada |
-| `TestConvert_MergesFileFormat` | el `.merges` tiene una línea por regla, en el orden de entrada |
+```go
+func TestParseVocab_GapReturnsError(t *testing.T) {
+	vocabMap := map[string]int{"a": 0, "c": 2} // hueco en id 1
+	_, err := parseVocab(vocabMap, 3)
+	if err == nil {
+		t.Fatal("expected error for vocab gap, got nil")
+	}
+}
+
+func TestParseVocab_DenseOK(t *testing.T) {
+	vocabMap := map[string]int{"a": 0, "b": 1, "c": 2}
+	vocab, err := parseVocab(vocabMap, 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"a", "b", "c"}
+	for i, w := range want {
+		if vocab[i] != w {
+			t.Errorf("vocab[%d] = %q, want %q", i, vocab[i], w)
+		}
+	}
+}
+```
+
+## Fix 4 — `go.mod`: `webtyp.com/weights` está marcado `// indirect` pero se importa directo
+
+`convert.go` tiene `import "webtyp.com/weights"` — un import directo. Hoy `go.mod` lo lista
+como:
+
+```
+webtyp.com/weights v0.1.0 // indirect
+```
+
+**Arreglo:** quitale el comentario `// indirect` a esa única línea. Las otras cinco
+(`context`, `fetch`, `fmt`, `model`, `storage`) son dependencias transitivas de `weights` y
+se quedan tal cual, con `// indirect`.
+
+## Fix 5 — `convert_test.go`: el caso "neg zero" de `TestBF16ToF32_KnownValues` no puede fallar nunca
+
+Hoy:
+
+```go
+{"neg zero", 0x8000, -0.0},
+...
+got := bf16ToF32(tt.bits)
+if got != tt.expected && !(math.IsNaN(...) && math.IsNaN(...)) {
+	t.Errorf(...)
+}
+```
+
+En Go, el literal `-0.0` como constante es cero exacto (no hay "menos cero" en la aritmética
+de constantes), y la comparación `!=` de punto flotante trata `+0.0` y `-0.0` como iguales
+(regla IEEE 754). Si `bf16ToF32(0x8000)` alguna vez devolviera `+0.0` en vez de `-0.0` por una
+regresión, este test seguiría pasando sin detectarlo.
+
+**Arreglo:** cambiá la comparación de todo el subtest a bit-exacta, que sí distingue signo de
+cero y no rompe ningún caso existente de la tabla (ninguno es NaN):
+
+```go
+got := bf16ToF32(tt.bits)
+if math.Float32bits(got) != math.Float32bits(tt.expected) {
+	t.Errorf("bf16ToF32(0x%04X) = %v (bits %#x), want %v (bits %#x)",
+		tt.bits, got, math.Float32bits(got), tt.expected, math.Float32bits(tt.expected))
+}
+```
+
+Borrá la rama `math.IsNaN` — ya no hace falta (`Float32bits` compara NaNs por bit-pattern
+exacto, que es más estricto y sigue siendo correcto para esta tabla, donde no hay NaN).
+
+Y para que `{"neg zero", 0x8000, -0.0}` compare contra el bit pattern correcto de cero
+negativo, construí `tt.expected` con signo explícito en vez del literal `-0.0` (que Go
+normaliza a cero positivo antes de que este test lo vea):
+
+```go
+{"neg zero", 0x8000, float32(math.Copysign(0, -1))},
+```
 
 ## Checklist de aceptación
 
 ```bash
 go vet ./...
 gotest
-grep -rn "map\[" --include="*.go" . | grep -v _test.go   # → vacío (sigue aplicando: aunque
-                                                           # este repo no compila a wasm, es
-                                                           # buena práctica y evita sorpresas
-                                                           # si algo de acá se reusa después)
 ```
 
-No hace falta `GOOS=js GOARCH=wasm` ni `tinygo` acá — este repo no compila a WASM (ver nota de
-arriba y `AGENTS.md`).
+**No** hay chequeo de `map[` acá — ver la nota de arriba y `AGENTS.md`: los maps de
+`safetensors.go` y `convert.go` son código correcto tal como está, este repo no compila a
+WASM y la regla de "sin `map[K]V`" no le aplica.
+
+No hace falta `GOOS=js GOARCH=wasm` ni `tinygo` — este repo no compila a WASM.

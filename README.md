@@ -1,4 +1,5 @@
 # weightsc
+<img src="docs/img/badges.svg">
 
 offline safetensors to WTYPW1 artifact converter
 
