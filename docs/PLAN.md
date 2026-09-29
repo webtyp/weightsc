@@ -3,8 +3,9 @@ PLAN: "feat!: weightsc converts Qwen3.5 — int8-block32 quantization, tensor pr
 TAG: v0.2.0
 EXECUTOR: jules
 REVIEWER: none
-STATUS: running
+STATUS: review
 SESSION: 24929892392735314
+PR: https://github.com/webtyp/weightsc/pull/3
 ---
 
 > This plan is dispatched via the CodeJob workflow. See skill: agents-workflow.
