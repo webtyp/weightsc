@@ -10,7 +10,7 @@ import (
 )
 
 func printUsage() {
-	fmt.Println("Usage: weightsc -in <dir> -out <file.wtypw> -merges-out <file.merges> -id <artifact-id> -version <uint32>")
+	fmt.Println("Usage: weightsc -in <dir> -out <file.wtypw> -merges-out <file.merges> -id <artifact-id> -version <uint32> [-quant int8-row|int8-block32|float32] [-prefix <tensor name prefix>]")
 	flag.PrintDefaults()
 }
 
@@ -20,6 +20,8 @@ func main() {
 	mergesOutFile := flag.String("merges-out", "", "output .merges companion file path")
 	artifactID := flag.String("id", "", "artifact ID")
 	version := flag.Uint("version", 0, "artifact version number")
+	quant := flag.String("quant", "int8-row", "quantization for 2-D tensors (int8-row, int8-block32, float32)")
+	prefix := flag.String("prefix", "", "filter tensors by name prefix")
 
 	flag.Usage = func() {
 		printUsage()
@@ -32,18 +34,31 @@ func main() {
 
 	flag.Parse()
 
-	if *inDir == "" || *outFile == "" || *mergesOutFile == "" || *artifactID == "" || *version == 0 {
-		fmt.Fprintln(os.Stderr, "Error: missing or invalid required flags (-in, -out, -merges-out, -id, -version)")
-		printUsage()
-		os.Exit(1)
-	}
-
 	if *version > math.MaxUint32 {
 		fmt.Fprintf(os.Stderr, "Error: -version %d exceeds uint32 range (max %d)\n", *version, uint32(math.MaxUint32))
 		os.Exit(1)
 	}
 
-	artifactBytes, mergesBytes, err := weightsc.Convert(*inDir, *artifactID, uint32(*version))
+	opts := weightsc.Options{
+		ID:      *artifactID,
+		Version: uint32(*version),
+		Quant:   weightsc.Quant(*quant),
+		Prefix:  *prefix,
+	}
+
+	if err := opts.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printUsage()
+		os.Exit(1)
+	}
+
+	if *inDir == "" || *outFile == "" || *mergesOutFile == "" {
+		fmt.Fprintln(os.Stderr, "Error: missing required file path flags (-in, -out, -merges-out)")
+		printUsage()
+		os.Exit(1)
+	}
+
+	artifactBytes, mergesBytes, err := weightsc.Convert(*inDir, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
