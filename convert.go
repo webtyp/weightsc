@@ -15,7 +15,15 @@ import (
 )
 
 type configJSON struct {
-	VocabSize int `json:"vocab_size"`
+	VocabSize  int `json:"vocab_size"`
+	TextConfig struct {
+		VocabSize int `json:"vocab_size"`
+	} `json:"text_config"`
+}
+
+type addedToken struct {
+	ID      int    `json:"id"`
+	Content string `json:"content"`
 }
 
 type tokenizerJSON struct {
@@ -23,43 +31,7 @@ type tokenizerJSON struct {
 		Vocab  map[string]int    `json:"vocab"`
 		Merges []json.RawMessage `json:"merges"`
 	} `json:"model"`
-}
-
-// QuantizeRowInt8 converts one row of float32 values to int8 with a per-row scale.
-// scale = max(abs(row)) / 127; q[i] = round(row[i] / scale), clamped to [-127, 127].
-// A row of all zeros gets scale = 1 (avoid divide by zero) and stays all zeros.
-func QuantizeRowInt8(row []float32) ([]int8, float32) {
-	if len(row) == 0 {
-		return nil, 1.0
-	}
-	var maxAbs float32
-	for _, v := range row {
-		absVal := v
-		if absVal < 0 {
-			absVal = -absVal
-		}
-		if absVal > maxAbs {
-			maxAbs = absVal
-		}
-	}
-
-	if maxAbs == 0 {
-		return make([]int8, len(row)), 1.0
-	}
-
-	scale := maxAbs / 127.0
-	q := make([]int8, len(row))
-	for i, v := range row {
-		scaled := math.Round(float64(v / scale))
-		if scaled > 127 {
-			scaled = 127
-		} else if scaled < -127 {
-			scaled = -127
-		}
-		q[i] = int8(scaled)
-	}
-
-	return q, scale
+	AddedTokens []addedToken `json:"added_tokens"`
 }
 
 func parseMerges(rawMerges []json.RawMessage) ([]string, error) {
@@ -81,13 +53,19 @@ func parseMerges(rawMerges []json.RawMessage) ([]string, error) {
 	return merges, nil
 }
 
-func parseVocab(vocabMap map[string]int, vocabSize int) ([]string, error) {
+func parseVocab(vocabMap map[string]int, addedTokens []addedToken, vocabSize int) ([]string, error) {
 	maxID := -1
 	for _, id := range vocabMap {
 		if id > maxID {
 			maxID = id
 		}
 	}
+	for _, item := range addedTokens {
+		if item.ID > maxID {
+			maxID = item.ID
+		}
+	}
+
 	size := vocabSize
 	if size < maxID+1 {
 		size = maxID + 1
@@ -95,6 +73,7 @@ func parseVocab(vocabMap map[string]int, vocabSize int) ([]string, error) {
 
 	vocab := make([]string, size)
 	filled := make([]bool, size)
+
 	for tok, id := range vocabMap {
 		if id >= 0 && id < size {
 			vocab[id] = tok
@@ -102,18 +81,35 @@ func parseVocab(vocabMap map[string]int, vocabSize int) ([]string, error) {
 		}
 	}
 
-	for id, ok := range filled {
-		if !ok {
-			return nil, fmt.Errorf("vocab has no token for id %d (vocab size %d)", id, size)
+	for _, item := range addedTokens {
+		id := item.ID
+		tok := item.Content
+		if id >= 0 && id < size {
+			if filled[id] && vocab[id] != tok {
+				return nil, fmt.Errorf("weightsc: token id %d is both %q and %q", id, vocab[id], tok)
+			}
+			vocab[id] = tok
+			filled[id] = true
+		}
+	}
+
+	for id := 0; id < size; id++ {
+		if !filled[id] {
+			vocab[id] = fmt.Sprintf("<|pad_%d|>", id)
 		}
 	}
 
 	return vocab, nil
 }
 
-// Convert reads a model directory containing config.json, tokenizer.json, and model.safetensors,
+// Convert reads a model directory containing config.json, tokenizer.json, and model.safetensors
+// (or shards listed in model.safetensors.index.json),
 // and produces the WTYPW1 artifact bytes and .merges content.
-func Convert(inDir string, artifactID string, version uint32) ([]byte, []byte, error) {
+func Convert(inDir string, opts Options) ([]byte, []byte, error) {
+	if err := opts.Validate(); err != nil {
+		return nil, nil, err
+	}
+
 	cfgPath := filepath.Join(inDir, "config.json")
 	cfgBytes, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -122,6 +118,11 @@ func Convert(inDir string, artifactID string, version uint32) ([]byte, []byte, e
 	var cfg configJSON
 	if err := json.Unmarshal(cfgBytes, &cfg); err != nil {
 		return nil, nil, fmt.Errorf("parsing config.json: %w", err)
+	}
+
+	vocabSize := cfg.VocabSize
+	if vocabSize == 0 {
+		vocabSize = cfg.TextConfig.VocabSize
 	}
 
 	tokPath := filepath.Join(inDir, "tokenizer.json")
@@ -134,7 +135,7 @@ func Convert(inDir string, artifactID string, version uint32) ([]byte, []byte, e
 		return nil, nil, fmt.Errorf("parsing tokenizer.json: %w", err)
 	}
 
-	vocab, err := parseVocab(tokData.Model.Vocab, cfg.VocabSize)
+	vocab, err := parseVocab(tokData.Model.Vocab, tokData.AddedTokens, vocabSize)
 	if err != nil {
 		return nil, nil, fmt.Errorf("parsing vocab from tokenizer.json: %w", err)
 	}
@@ -156,59 +157,106 @@ func Convert(inDir string, artifactID string, version uint32) ([]byte, []byte, e
 		Vocab:        vocab,
 	}
 
-	stPath := filepath.Join(inDir, "model.safetensors")
-	st, err := OpenSafetensors(stPath)
+	st, err := openCheckpoint(inDir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("opening model.safetensors: %w", err)
+		return nil, nil, err
 	}
 	defer st.Close()
 
-	names := make([]string, 0, len(st.Tensors))
-	for name := range st.Tensors {
+	names := make([]string, 0)
+	for _, name := range st.names() {
+		if opts.Prefix != "" && !strings.HasPrefix(name, opts.Prefix) {
+			continue
+		}
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
+	quant := opts.Quant
+	if quant == "" {
+		quant = QuantInt8Row
+	}
+
 	inputs := make([]weights.TensorInput, 0, len(names))
 	for _, name := range names {
-		f32s, shape, err := st.ReadTensorFloat32(name)
+		f32s, shape, err := st.readFloat32(name)
 		if err != nil {
 			return nil, nil, fmt.Errorf("reading tensor %s: %w", name, err)
+		}
+
+		expectedLen := 1
+		for _, d := range shape {
+			expectedLen *= d
+		}
+		if len(f32s) != expectedLen {
+			return nil, nil, fmt.Errorf("tensor %s size mismatch: shape %v vs data len %d", name, shape, len(f32s))
 		}
 
 		if len(shape) == 2 {
 			rows := shape[0]
 			cols := shape[1]
-			if len(f32s) != rows*cols {
-				return nil, nil, fmt.Errorf("tensor %s size mismatch: shape %v vs data len %d", name, shape, len(f32s))
-			}
 
-			qData := make([]byte, rows*cols)
-			scales := make([]float32, rows)
+			switch quant {
+			case QuantInt8Row:
+				qData := make([]byte, rows*cols)
+				scales := make([]float32, rows)
 
-			for r := 0; r < rows; r++ {
-				rowSlice := f32s[r*cols : (r+1)*cols]
-				qRow, scale := QuantizeRowInt8(rowSlice)
-				scales[r] = scale
-				for c, qVal := range qRow {
-					qData[r*cols+c] = byte(qVal)
+				for r := 0; r < rows; r++ {
+					rowSlice := f32s[r*cols : (r+1)*cols]
+					qRow, scale := QuantizeRowInt8(rowSlice)
+					scales[r] = scale
+					for c, qVal := range qRow {
+						qData[r*cols+c] = byte(qVal)
+					}
 				}
-			}
 
-			inputs = append(inputs, weights.TensorInput{
-				Name:   name,
-				DType:  weights.Int8,
-				Shape:  shape,
-				Data:   qData,
-				Scales: scales,
-			})
-		} else if len(shape) == 1 {
-			dim := shape[0]
-			if len(f32s) != dim {
-				return nil, nil, fmt.Errorf("tensor %s size mismatch: shape %v vs data len %d", name, shape, len(f32s))
-			}
+				inputs = append(inputs, weights.TensorInput{
+					Name:   name,
+					DType:  weights.Int8,
+					Shape:  shape,
+					Data:   qData,
+					Scales: scales,
+				})
 
-			data := make([]byte, dim*4)
+			case QuantInt8Block32:
+				numBlocksPerRow := (cols + weights.BlockSize - 1) / weights.BlockSize
+				scales := make([]float32, 0, rows*numBlocksPerRow)
+				qData := make([]byte, 0, rows*cols)
+
+				for r := 0; r < rows; r++ {
+					rowSlice := f32s[r*cols : (r+1)*cols]
+					qRow, rowScales := QuantizeBlocksInt8(rowSlice)
+					scales = append(scales, rowScales...)
+					for _, qVal := range qRow {
+						qData = append(qData, byte(qVal))
+					}
+				}
+
+				inputs = append(inputs, weights.TensorInput{
+					Name:   name,
+					DType:  weights.Int8Block32,
+					Shape:  shape,
+					Data:   qData,
+					Scales: scales,
+				})
+
+			case QuantFloat32:
+				data := make([]byte, len(f32s)*4)
+				for i, v := range f32s {
+					binary.LittleEndian.PutUint32(data[i*4:], math.Float32bits(v))
+				}
+
+				inputs = append(inputs, weights.TensorInput{
+					Name:   name,
+					DType:  weights.Float32,
+					Shape:  shape,
+					Data:   data,
+					Scales: nil,
+				})
+			}
+		} else {
+			// 1-D and >= 3-D tensors: always float32, shape kept as in the file
+			data := make([]byte, len(f32s)*4)
 			for i, v := range f32s {
 				binary.LittleEndian.PutUint32(data[i*4:], math.Float32bits(v))
 			}
@@ -220,12 +268,10 @@ func Convert(inDir string, artifactID string, version uint32) ([]byte, []byte, e
 				Data:   data,
 				Scales: nil,
 			})
-		} else {
-			return nil, nil, fmt.Errorf("unsupported tensor shape dimension %d for tensor %s", len(shape), name)
 		}
 	}
 
-	artifactBytes, err := weights.WriteArtifact(artifactID, version, tokConfig, inputs)
+	artifactBytes, err := weights.WriteArtifact(opts.ID, opts.Version, tokConfig, inputs)
 	if err != nil {
 		return nil, nil, fmt.Errorf("writing artifact: %w", err)
 	}
