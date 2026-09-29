@@ -102,7 +102,8 @@ func parseVocab(vocabMap map[string]int, addedTokens []addedToken, vocabSize int
 	return vocab, nil
 }
 
-// Convert reads a model directory containing config.json, tokenizer.json, and model.safetensors,
+// Convert reads a model directory containing config.json, tokenizer.json, and model.safetensors
+// (or shards listed in model.safetensors.index.json),
 // and produces the WTYPW1 artifact bytes and .merges content.
 func Convert(inDir string, opts Options) ([]byte, []byte, error) {
 	if err := opts.Validate(); err != nil {
@@ -156,15 +157,14 @@ func Convert(inDir string, opts Options) ([]byte, []byte, error) {
 		Vocab:        vocab,
 	}
 
-	stPath := filepath.Join(inDir, "model.safetensors")
-	st, err := OpenSafetensors(stPath)
+	st, err := openCheckpoint(inDir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("opening model.safetensors: %w", err)
+		return nil, nil, err
 	}
 	defer st.Close()
 
-	names := make([]string, 0, len(st.Tensors))
-	for name := range st.Tensors {
+	names := make([]string, 0)
+	for _, name := range st.names() {
 		if opts.Prefix != "" && !strings.HasPrefix(name, opts.Prefix) {
 			continue
 		}
@@ -179,7 +179,7 @@ func Convert(inDir string, opts Options) ([]byte, []byte, error) {
 
 	inputs := make([]weights.TensorInput, 0, len(names))
 	for _, name := range names {
-		f32s, shape, err := st.ReadTensorFloat32(name)
+		f32s, shape, err := st.readFloat32(name)
 		if err != nil {
 			return nil, nil, fmt.Errorf("reading tensor %s: %w", name, err)
 		}

@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"webtyp.com/weights"
@@ -108,7 +109,7 @@ func TestQuantizeRowInt8_AllZeros(t *testing.T) {
 func createSyntheticSafetensors(t *testing.T, dir string) string {
 	t.Helper()
 	// Create float32 values and convert to BF16
-	f1D := []float32{1.0, 2.0, 3.0, 4.0}                           // 4 elements -> 8 bytes
+	f1D := []float32{1.0, 2.0, 3.0, 4.0}                         // 4 elements -> 8 bytes
 	f2D := []float32{0.1, 0.2, 0.3, 0.4, -0.5, -0.6, -0.7, -0.8} // 8 elements -> 16 bytes
 
 	var payload bytes.Buffer
@@ -665,5 +666,60 @@ func TestConvert_AddedTokenConflict(t *testing.T) {
 	wantSub := `weightsc: token id 1 is both "b" and "conflict"`
 	if !bytes.Contains([]byte(err.Error()), []byte(wantSub)) {
 		t.Errorf("err = %q, want to contain %q", err.Error(), wantSub)
+	}
+}
+
+// Hugging Face publishes many checkpoints as shards plus model.safetensors.index.json
+// (Qwen3.5-0.8B: model.safetensors-00001-of-00001.safetensors). The sharded layout must convert
+// to exactly the same artifact as the single-file layout.
+func TestConvert_ShardedCheckpointMatchesSingleFile(t *testing.T) {
+	single := t.TempDir()
+	createSyntheticSafetensors(t, single)
+	cfg := `{"vocab_size": 4}`
+	tok := `{"model": {"vocab": {"a": 0, "b": 1, "c": 2, "d": 3}, "merges": ["a b"]}}`
+	for _, dir := range []string{single} {
+		os.WriteFile(filepath.Join(dir, "config.json"), []byte(cfg), 0644)
+		os.WriteFile(filepath.Join(dir, "tokenizer.json"), []byte(tok), 0644)
+	}
+	opts := Options{ID: "m", Version: 1, Quant: QuantInt8Block32}
+	want, _, err := Convert(single, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sharded := t.TempDir()
+	data, _ := os.ReadFile(filepath.Join(single, SingleFileName))
+	shard := "model.safetensors-00001-of-00001.safetensors"
+	os.WriteFile(filepath.Join(sharded, shard), data, 0644)
+	os.WriteFile(filepath.Join(sharded, "config.json"), []byte(cfg), 0644)
+	os.WriteFile(filepath.Join(sharded, "tokenizer.json"), []byte(tok), 0644)
+	st, err := OpenSafetensors(filepath.Join(sharded, shard))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wm := map[string]string{}
+	for name := range st.Tensors {
+		wm[name] = shard
+	}
+	st.Close()
+	idx, _ := json.Marshal(map[string]any{"weight_map": wm})
+	os.WriteFile(filepath.Join(sharded, IndexFileName), idx, 0644)
+
+	got, _, err := Convert(sharded, opts)
+	if err != nil {
+		t.Fatalf("sharded Convert: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("sharded checkpoint must produce the same artifact as the single file")
+	}
+}
+
+func TestConvert_NoCheckpointNamesBothLayouts(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"vocab_size": 1}`), 0644)
+	os.WriteFile(filepath.Join(dir, "tokenizer.json"), []byte(`{"model": {"vocab": {"a": 0}, "merges": []}}`), 0644)
+	_, _, err := Convert(dir, Options{ID: "m", Version: 1})
+	if err == nil || !strings.Contains(err.Error(), SingleFileName) || !strings.Contains(err.Error(), IndexFileName) {
+		t.Fatalf("error = %v, want it to name both layouts", err)
 	}
 }

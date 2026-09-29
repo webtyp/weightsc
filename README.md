@@ -26,4 +26,9 @@ weightsc -in ~/Dev/LMmodels/Qwen/Qwen3.5-0.8B -out qwen3.5-0.8b.wtypw \
          -quant int8-block32 -prefix model.language_model.
 ```
 
+The input directory may hold one `model.safetensors` or, as Hugging Face publishes larger
+models, shards listed in `model.safetensors.index.json` (Qwen3.5-0.8B ships as
+`model.safetensors-00001-of-00001.safetensors`). The result for Qwen3.5-0.8B: 851 MB, 320 tensors
+(187 `int8b32`, 133 `float32`), vocabulary 248 320 with the special tokens at their ids.
+
 This skips non-text model weights (such as vision tower `model.visual.*` or MTP head `mtp.*`) and ensures special tokens and vocabulary padding are included in the output artifact.
