@@ -2,7 +2,7 @@
 
 Constraints for agents working on this repo. **Read this before any change.**
 The current work order is [docs/PLAN.md](docs/PLAN.md); the master index is
-[`agent/docs/MASTER_PLAN.md`](https://github.com/webtyp/agent/blob/main/docs/MASTER_PLAN.md).
+[`retrieval/docs/SEMANTIC_SEARCH_MASTER_PLAN.md`](https://github.com/webtyp/retrieval/blob/main/docs/SEMANTIC_SEARCH_MASTER_PLAN.md).
 
 ---
 
