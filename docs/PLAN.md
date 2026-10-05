@@ -6,9 +6,7 @@ REVIEWER: none
 ---
 
 > This plan is dispatched via the CodeJob workflow. See skill: agents-workflow.
->
-> **WAITS** for `webtyp.com/weights` v0.4.0 (`Int4Block32`, `QuantizeInt4Block32`), dispatched
-> 2026-10-05. Rename to `docs/PLAN.md` to dispatch once it is published.
+
 
 # Plan — `weightsc` v0.3.0: 4-bit conversion
 
