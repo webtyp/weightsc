@@ -3,8 +3,9 @@ PLAN: "feat: -quant int4-block32 — convert checkpoints to 4-bit blocks (weight
 TAG: v0.3.0
 EXECUTOR: jules
 REVIEWER: none
-STATUS: running
+STATUS: review
 SESSION: 12465041048023580988
+PR: https://github.com/webtyp/weightsc/pull/4
 ---
 
 > This plan is dispatched via the CodeJob workflow. See skill: agents-workflow.

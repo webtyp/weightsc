@@ -10,6 +10,7 @@ type Quant string
 const (
 	QuantInt8Row     Quant = "int8-row"     // one scale per row (default; the embedding model)
 	QuantInt8Block32 Quant = "int8-block32" // one scale per 32 values (language models)
+	QuantInt4Block32 Quant = "int4-block32" // 4 bits per value, one scale per 32 (GGUF Q4_0); rows not a multiple of 32 stay int8-block32
 	QuantFloat32     Quant = "float32"      // no quantization (verification, small models)
 )
 
@@ -36,9 +37,9 @@ func (o Options) Validate() error {
 	}
 
 	switch q {
-	case QuantInt8Row, QuantInt8Block32, QuantFloat32:
+	case QuantInt8Row, QuantInt8Block32, QuantInt4Block32, QuantFloat32:
 		return nil
 	default:
-		return fmt.Errorf("weightsc: unknown quantization %q (want int8-row, int8-block32 or float32)", o.Quant)
+		return fmt.Errorf("weightsc: unknown quantization %q (want int8-row, int8-block32, int4-block32 or float32)", o.Quant)
 	}
 }

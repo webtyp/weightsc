@@ -10,7 +10,7 @@ import (
 )
 
 func printUsage() {
-	fmt.Println("Usage: weightsc -in <dir> -out <file.wtypw> -merges-out <file.merges> -id <artifact-id> -version <uint32> [-quant int8-row|int8-block32|float32] [-prefix <tensor name prefix>]")
+	fmt.Println("Usage: weightsc -in <dir> -out <file.wtypw> -merges-out <file.merges> -id <artifact-id> -version <uint32> [-quant int8-row|int8-block32|int4-block32|float32] [-prefix <tensor name prefix>]")
 	flag.PrintDefaults()
 }
 
@@ -20,7 +20,7 @@ func main() {
 	mergesOutFile := flag.String("merges-out", "", "output .merges companion file path")
 	artifactID := flag.String("id", "", "artifact ID")
 	version := flag.Uint("version", 0, "artifact version number")
-	quant := flag.String("quant", "int8-row", "quantization for 2-D tensors (int8-row, int8-block32, float32)")
+	quant := flag.String("quant", "int8-row", "quantization for 2-D tensors (int8-row, int8-block32, int4-block32, float32)")
 	prefix := flag.String("prefix", "", "filter tensors by name prefix")
 
 	flag.Usage = func() {
