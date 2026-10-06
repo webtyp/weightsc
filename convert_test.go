@@ -327,7 +327,7 @@ func TestOptions_Validate(t *testing.T) {
 		{
 			name:    "unknown Quant",
 			opts:    Options{ID: "test", Version: 1, Quant: "invalid"},
-			wantErr: `weightsc: unknown quantization "invalid" (want int8-row, int8-block32 or float32)`,
+			wantErr: `weightsc: unknown quantization "invalid" (want int8-row, int8-block32, int4-block32 or float32)`,
 		},
 		{
 			name:    "valid defaults",

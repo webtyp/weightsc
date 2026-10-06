@@ -219,26 +219,24 @@ func Convert(inDir string, opts Options) ([]byte, []byte, error) {
 				})
 
 			case QuantInt8Block32:
-				numBlocksPerRow := (cols + weights.BlockSize - 1) / weights.BlockSize
-				scales := make([]float32, 0, rows*numBlocksPerRow)
-				qData := make([]byte, 0, rows*cols)
+				inputs = append(inputs, int8Block32Input(name, shape, f32s))
 
-				for r := 0; r < rows; r++ {
-					rowSlice := f32s[r*cols : (r+1)*cols]
-					qRow, rowScales := QuantizeBlocksInt8(rowSlice)
-					scales = append(scales, rowScales...)
-					for _, qVal := range qRow {
-						qData = append(qData, byte(qVal))
-					}
+			case QuantInt4Block32:
+				if cols%weights.BlockSize != 0 {
+					inputs = append(inputs, int8Block32Input(name, shape, f32s))
+					break
 				}
-
-				inputs = append(inputs, weights.TensorInput{
-					Name:   name,
-					DType:  weights.Int8Block32,
-					Shape:  shape,
-					Data:   qData,
-					Scales: scales,
-				})
+				data := make([]byte, 0, rows*cols/2)
+				scales := make([]float32, 0, rows*cols/weights.BlockSize)
+				for r := 0; r < rows; r++ {
+					q, s, err := weights.QuantizeInt4Block32(f32s[r*cols : (r+1)*cols])
+					if err != nil {
+						return nil, nil, fmt.Errorf("tensor %s: %w", name, err)
+					}
+					data = append(data, q...)
+					scales = append(scales, s...)
+				}
+				inputs = append(inputs, weights.TensorInput{Name: name, DType: weights.Int4Block32, Shape: shape, Data: data, Scales: scales})
 
 			case QuantFloat32:
 				data := make([]byte, len(f32s)*4)
@@ -277,4 +275,21 @@ func Convert(inDir string, opts Options) ([]byte, []byte, error) {
 	}
 
 	return artifactBytes, mergesBuf.Bytes(), nil
+}
+
+// int8Block32Input quantizes a 2-D tensor to int8 with one scale per weights.BlockSize values of
+// each row.
+func int8Block32Input(name string, shape []int, f32s []float32) weights.TensorInput {
+	rows, cols := shape[0], shape[1]
+	numBlocksPerRow := (cols + weights.BlockSize - 1) / weights.BlockSize
+	scales := make([]float32, 0, rows*numBlocksPerRow)
+	qData := make([]byte, 0, rows*cols)
+	for r := 0; r < rows; r++ {
+		qRow, rowScales := QuantizeBlocksInt8(f32s[r*cols : (r+1)*cols])
+		scales = append(scales, rowScales...)
+		for _, qVal := range qRow {
+			qData = append(qData, byte(qVal))
+		}
+	}
+	return weights.TensorInput{Name: name, DType: weights.Int8Block32, Shape: shape, Data: qData, Scales: scales}
 }

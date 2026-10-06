@@ -31,4 +31,14 @@ models, shards listed in `model.safetensors.index.json` (Qwen3.5-0.8B ships as
 `model.safetensors-00001-of-00001.safetensors`). The result for Qwen3.5-0.8B: 851 MB, 320 tensors
 (187 `int8b32`, 133 `float32`), vocabulary 248 320 with the special tokens at their ids.
 
+For the browser, where memory is the limit, `-quant int4-block32` stores 4 bits per value (GGUF
+`Q4_0` layout, ≈ 0.625 bytes per value with its float32 scales; `weights.Int4Block32`). A matrix
+whose rows are not a multiple of 32 stays `int8-block32`:
+
+```bash
+weightsc -in ~/Dev/LMmodels/Mapika/decider-0.8b -out decider-0.8b.q4.wtypw \
+         -merges-out decider-0.8b.merges -id decider-0.8b -version 1 \
+         -quant int4-block32 -prefix model.language_model.
+```
+
 This skips non-text model weights (such as vision tower `model.visual.*` or MTP head `mtp.*`) and ensures special tokens and vocabulary padding are included in the output artifact.
