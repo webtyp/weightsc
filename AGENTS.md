@@ -20,7 +20,7 @@ It is a **build-time tool**, never shipped to a browser.
 Most of this ecosystem bans `os`, `flag`, `net/http`, `encoding/json`, `fmt`, `errors`,
 `map[K]V` in code that ships to a browser tab under TinyGo. **None of that applies here.**
 This repo never runs under `tinygo build -target wasm` and never will — it is the same
-category as `webtyp/ormc`, `webtyp/ddlc`, `webtyp/sitec`. If you find yourself "fixing" a
+category as `webtyp/definitionc`, `webtyp/ddlc`, `webtyp/sitec`. If you find yourself "fixing" a
 stdlib import in this repo because you saw the rule elsewhere in the ecosystem, stop: that
 rule protects a WASM binary size/compatibility budget this repo doesn't have.
 
